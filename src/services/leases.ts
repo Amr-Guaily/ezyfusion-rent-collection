@@ -1,4 +1,4 @@
-import { canSee, requireManager, type Caller } from '@/lib/auth/getCaller'
+import { canSee, requireManager, requireStaff, type Caller } from '@/lib/auth/getCaller'
 import { generateSchedule, invoiceStatus, type InvoiceKind, type InvoiceStatus } from '@/lib/billing'
 import { prisma } from '@/lib/db/prisma'
 import { badRequest, notFound } from '@/lib/http'
@@ -149,5 +149,84 @@ export async function getLease(caller: Caller, leaseId: string, now: Date = new 
       status: payment.status,
       receivedAt: toMalaysiaIso(payment.received_at),
     })),
+  }
+}
+
+export interface LeaseListItem {
+  id: string
+  unitName: string
+  tenantName: string
+  startDate: string
+  endDate: string
+  monthlyRentSen: number
+  outstandingSen: number
+  overdueCount: number
+}
+
+/** Leases of the caller's org for the staff list, with what is still owed and how many invoices are overdue. */
+export async function listLeases(caller: Caller, now: Date = new Date()): Promise<LeaseListItem[]> {
+  requireStaff(caller)
+  const leases = await prisma.leases.findMany({
+    where: { org_id: caller.orgId },
+    orderBy: [{ units: { name: 'asc' } }, { start_date: 'asc' }],
+    include: {
+      units: { select: { name: true } },
+      tenants: { select: { full_name: true } },
+      invoices: { include: { payment_allocations: { select: { amount_sen: true } } } },
+    },
+  })
+  return leases.map((lease) => {
+    let outstandingSen = 0
+    let overdueCount = 0
+    for (const invoice of lease.invoices) {
+      const amountSen = Number(invoice.amount_sen)
+      const paidSen = Number(invoice.payment_allocations.reduce((sum, a) => sum + a.amount_sen, 0n))
+      outstandingSen += Math.max(amountSen - paidSen, 0)
+      if (invoiceStatus({ dueDate: dateColumnToString(invoice.due_date), amountSen, paidSen }, now) === 'overdue') overdueCount++
+    }
+    return {
+      id: lease.id,
+      unitName: lease.units.name,
+      tenantName: lease.tenants.full_name,
+      startDate: dateColumnToString(lease.start_date),
+      endDate: dateColumnToString(lease.end_date),
+      monthlyRentSen: Number(lease.monthly_rent_sen),
+      outstandingSen,
+      overdueCount,
+    }
+  })
+}
+
+export interface LeasePageData extends LeaseView {
+  unitName: string
+  tenant: { fullName: string; email: string; phone: string | null }
+  paymentDetails: Record<string, { slipPath: string | null; reviewReason: string | null }>
+  /** What a new manual payment may be at most: invoices - allocated - pending (the API's cap). */
+  capSen: number
+}
+
+/** Everything the staff lease page shows. getLease does the authorization (404 for other orgs). */
+export async function getLeasePage(caller: Caller, leaseId: string, now: Date = new Date()): Promise<LeasePageData> {
+  requireStaff(caller)
+  const view = await getLease(caller, leaseId, now)
+  const extra = await prisma.leases.findUniqueOrThrow({
+    where: { id: leaseId },
+    select: {
+      units: { select: { name: true } },
+      tenants: { select: { full_name: true, email: true, phone: true } },
+      payments: { select: { id: true, slip_path: true, review_reason: true } },
+    },
+  })
+  const invoicedSen = view.invoices.reduce((sum, i) => sum + i.amountSen, 0)
+  const paidSen = view.invoices.reduce((sum, i) => sum + i.paidSen, 0)
+  const pendingSen = view.payments.filter((p) => p.status === 'pending_verification').reduce((sum, p) => sum + p.amountSen, 0)
+  return {
+    ...view,
+    unitName: extra.units.name,
+    tenant: { fullName: extra.tenants.full_name, email: extra.tenants.email, phone: extra.tenants.phone },
+    paymentDetails: Object.fromEntries(
+      extra.payments.map((p) => [p.id, { slipPath: p.slip_path, reviewReason: p.review_reason }]),
+    ),
+    capSen: Math.max(invoicedSen - paidSen - pendingSen, 0),
   }
 }
