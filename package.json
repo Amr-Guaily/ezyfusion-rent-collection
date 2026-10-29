@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "seed": "tsx --env-file=.env.local scripts/seed.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "check:concurrency": "tsx --env-file=.env.local scripts/concurrency-check.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
