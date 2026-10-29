@@ -1,0 +1,24 @@
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+import { publicEnv } from '@/lib/env'
+
+// Supabase client for the current request, authenticated by the session cookie.
+// Uses the publishable key, so anything it queries is subject to RLS.
+export async function createClient() {
+  const cookieStore = await cookies()
+  const { NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY } = publicEnv()
+  return createServerClient(NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll()
+      },
+      setAll(cookiesToSet) {
+        try {
+          for (const { name, value, options } of cookiesToSet) cookieStore.set(name, value, options)
+        } catch {
+          // Called from a Server Component, where cookies are read-only; proxy.ts refreshes the session.
+        }
+      },
+    },
+  })
+}
