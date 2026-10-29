@@ -54,6 +54,14 @@ export function toMalaysiaLocalInput(date: Date): string {
   return shifted(date).slice(0, 16)
 }
 
+/** An API instant: ISO 8601 that already passed z.iso.datetime({ offset: true }). The explicit offset makes parsing exact. */
+export function parseIsoInstant(value: string): Date {
+  if (!/(Z|[+-]\d{2}:?\d{2})$/.test(value)) throw new Error('Instant must carry an offset')
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) throw new Error('Invalid instant')
+  return date
+}
+
 /** The gateway's paid_at, e.g. '2026-04-01 00:30:12 +0800', to an instant. */
 export function parseGatewayPaidAt(value: string): Date {
   const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}) ([+-])(\d{2})(\d{2})$/.exec(value)

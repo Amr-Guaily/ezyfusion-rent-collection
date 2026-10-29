@@ -48,7 +48,8 @@ export function errorJson(status: number, message: string): NextResponse {
 
 /**
  * Postgres SQLSTATE of a database error, however Prisma's pg driver adapter wrapped it
- * (directly, as `cause`, or under `meta.driverAdapterError`).
+ * (directly, as `cause`, or under `meta.driverAdapterError`). Prisma's own codes
+ * (P2039 and friends) are also five characters, so they are skipped explicitly.
  */
 export function pgErrorCode(error: unknown): string | undefined {
   const seen = new Set<unknown>()
@@ -60,12 +61,18 @@ export function pgErrorCode(error: unknown): string | undefined {
     const record = current as Record<string, unknown>
     for (const key of ['originalCode', 'code']) {
       const value = record[key]
-      if (typeof value === 'string' && /^[0-9A-Z]{5}$/.test(value)) return value
+      if (typeof value === 'string' && /^[0-9A-Z]{5}$/.test(value) && !/^P\d{4}$/.test(value)) return value
     }
     const meta = record.meta as Record<string, unknown> | undefined
     queue.push(record.cause, meta?.driverAdapterError, meta)
   }
   return undefined
+}
+
+/** Prisma's own error code (e.g. P2002 unique violation) when there is no SQLSTATE. */
+function prismaErrorCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code
+  return typeof code === 'string' && /^P\d{4}$/.test(code) ? code : undefined
 }
 
 export function toErrorResponse(error: unknown): NextResponse {
@@ -75,10 +82,11 @@ export function toErrorResponse(error: unknown): NextResponse {
     const where = issue?.path.length ? `${issue.path.join('.')}: ` : ''
     return errorJson(400, `${where}${issue?.message ?? 'Invalid input'}`)
   }
-  switch (pgErrorCode(error)) {
+  switch (pgErrorCode(error) ?? prismaErrorCode(error)) {
     case '23P01':
       return errorJson(409, 'Overlaps another lease on this unit')
     case '23505':
+    case 'P2002':
       return errorJson(409, 'Conflicts with an existing record')
     case '40001':
     case '40P01':
@@ -102,19 +110,34 @@ export function route<Ctx>(handler: Handler<Ctx>): Handler<Ctx> {
   }
 }
 
-/** Parses a JSON body with a Zod schema; malformed JSON is a 400 like any invalid input. */
-export async function readJson<T extends z.ZodType>(req: Request, schema: T): Promise<z.infer<T>> {
-  let body: unknown
+/** The raw JSON body; malformed JSON is a 400 like any invalid input. */
+export async function readJsonBody(req: Request): Promise<unknown> {
   try {
-    body = await req.json()
+    return await req.json()
   } catch {
     throw badRequest('Body must be valid JSON')
   }
-  return schema.parse(body)
+}
+
+/** Parses a JSON body with a Zod schema. */
+export async function readJson<T extends z.ZodType>(req: Request, schema: T): Promise<z.infer<T>> {
+  return schema.parse(await readJsonBody(req))
 }
 
 /** A path id that is not a UUID cannot name a record: 404, same as an unknown one. */
 export function parseId(value: string): string {
   if (!z.uuid().safeParse(value).success) throw notFound()
   return value
+}
+
+/**
+ * The JSON body, or undefined when it is missing or malformed. For handlers that must
+ * run their 404/403 checks before reporting invalid input (the schema then gives the 400).
+ */
+export async function readJsonBodyLenient(req: Request): Promise<unknown> {
+  try {
+    return await req.json()
+  } catch {
+    return undefined
+  }
 }
