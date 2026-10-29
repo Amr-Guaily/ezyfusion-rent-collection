@@ -7,6 +7,12 @@ Status: approved 2026-10-29 with these amendments (already applied below):
    (a) as anon, `select from leases` fails; (b) as a tenant JWT via PostgREST curl, another org's lease returns 0 rows;
    (c) `update audit_log` as postgres raises.
 
+Changes found while building slice 2 (the migrations are authoritative; A1 below is the original draft):
+- No FK from `memberships.user_id` / `tenants.user_id` to `auth.users`: `prisma db pull` rejects cross-schema FKs unless it introspects all of `auth`.
+- `invoices_one_deposit` partial index replaced by `unique nulls not distinct (lease_id, period_index)`; Prisma read the partial index as `@unique lease_id` (a 1:1 lease-invoice relation).
+- Added `unique (gateway_bill_id, org_id)` on payments so Prisma can model the composite FK.
+- `[auth.email] enable_signup` must stay `true`: `false` disables email/password sign-in entirely. Signups are blocked by `[auth] enable_signup = false`.
+
 Accepted: D3 (hand-written SQL + `prisma db pull`), D6 (tailwind-merge), D8 (`enable_signup = false`), D9 (404 for foreign unit/tenant).
 Commit after every slice.
 
